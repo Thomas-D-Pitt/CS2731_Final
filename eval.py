@@ -5,6 +5,23 @@ from rouge.rouge import Rouge
 import torch
 from transformers import GPT2LMHeadModel, GPT2Tokenizer
 import pandas as pd
+from tqdm import tqdm
+from contextlib import contextmanager
+import sys
+import os
+
+@contextmanager
+def suppress_output():
+    # Save the original stdout
+    original_stdout = sys.stdout
+    
+    # Redirect stdout to a null file
+    with open(os.devnull, 'w') as null_file:
+        sys.stdout = null_file
+        yield
+    
+    # Restore the original stdout
+    sys.stdout = original_stdout
 
 
 def evaluate(reference: list, generated: list, print_all=False):
@@ -19,6 +36,10 @@ def evaluate(reference: list, generated: list, print_all=False):
     neg_ppl_sum = 0
 
     assert len(reference) == len(generated)
+
+    model_name = "gpt2"  # You can specify other GPT-2 model variations as needed
+    model = GPT2LMHeadModel.from_pretrained(model_name)
+    tokenizer = GPT2Tokenizer.from_pretrained(model_name)
 
     for i in range(len(reference)):
         if (i % 100 == 0) and (i != 0):
@@ -56,21 +77,43 @@ def evaluate(reference: list, generated: list, print_all=False):
             print("ROUGE-L Score:", rouge_l_score)
 
 
-        model_name = "gpt2"  # You can specify other GPT-2 model variations as needed
-        model = GPT2LMHeadModel.from_pretrained(model_name)
-        tokenizer = GPT2Tokenizer.from_pretrained(model_name)
 
-        input_ids = tokenizer.encode(generated[i], return_tensors="pt")
+        encodings = tokenizer("\n\n".join(generated[i]), return_tensors="pt")
 
-        # Calculate the negative perplexity
-        with torch.no_grad():
-            output = model(input_ids, return_dict=True)
-            neg_ppl = torch.exp(output.logits).mean()
+        max_length = model.config.n_positions
+        stride = 512
+        seq_len = encodings.input_ids.size(1)
 
-        neg_ppl_sum += neg_ppl
+        nlls = []
+        prev_end_loc = 0
+        for begin_loc in tqdm(range(0, seq_len, stride), disable=True):
+            end_loc = min(begin_loc + max_length, seq_len)
+            trg_len = end_loc - prev_end_loc  # may be different from stride on last loop
+            input_ids = encodings.input_ids[:, begin_loc:end_loc]
+            target_ids = input_ids.clone()
+            target_ids[:, :-trg_len] = -100
+
+            with torch.no_grad():
+                outputs = model(input_ids, labels=target_ids)
+
+                # loss is calculated using CrossEntropyLoss which averages over valid labels
+                # N.B. the model only calculates loss over trg_len - 1 labels, because it internally shifts the labels
+                # to the left by 1.
+                neg_log_likelihood = outputs.loss
+
+            nlls.append(neg_log_likelihood)
+
+            prev_end_loc = end_loc
+            if end_loc == seq_len:
+                break
+
+            ppl = torch.exp(torch.stack(nlls).mean())
+            neg_ppl = -torch.log(ppl)
+
+        neg_ppl_sum += neg_ppl.item()  # accumulate the negative perplexity
 
         if print_all:
-            print("Negative PPL:", neg_ppl.item())
+            print("Negative PPL:", neg_ppl.item(), "\n")
     
     if len(reference) > 0:
         print("mean BLEU:", bleu_sum/len(reference))
@@ -86,4 +129,7 @@ if __name__ == '__main__':
     reference = df["label"].tolist()
     generated = df["output"].tolist()
 
-    evaluate(reference, generated, False)
+    # reference = ["A quick brown fox jumps over a lazy dog"]
+    # generated = ["The quick brown fox jumps over the lazy dog"]
+
+    evaluate(reference, generated, True)
