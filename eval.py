@@ -4,8 +4,7 @@ nltk.download('punkt')
 from rouge.rouge import Rouge
 import torch
 from transformers import GPT2LMHeadModel, GPT2Tokenizer
-
-
+import pandas as pd
 
 
 def evaluate(reference: list, generated: list, print_all=False):
@@ -22,6 +21,9 @@ def evaluate(reference: list, generated: list, print_all=False):
     assert len(reference) == len(generated)
 
     for i in range(len(reference)):
+        if (i % 100 == 0) and (i != 0):
+            print(f"{i}/{len(reference)}, mean BLEU: {bleu_sum/i}, mean ROUGE_L: {rouge_l_sum/i}, mean ROUGE_2: {rouge_2_sum/i}, mean NEG_PPL: {neg_ppl_sum/i}")
+ 
         # Calculate BLEU score
         reference_tokens = reference[i].split()
         generated_tokens = generated[i].split()
@@ -80,10 +82,8 @@ def evaluate(reference: list, generated: list, print_all=False):
         print("Reference/generated appear to be of length 0")
 
 if __name__ == '__main__':
-    with open("reference.txt", "r") as reference_file:
-        reference = [reference_file.read()]
-
-    with open("generated.txt", "r") as generated_file:
-        generated = [generated_file.read()]
+    df = pd.read_csv("finetuned_flan_0.001_15.csv")
+    reference = df["label"].tolist()
+    generated = df["output"].tolist()
 
     evaluate(reference, generated, False)
